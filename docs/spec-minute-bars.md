@@ -5,3 +5,5 @@ from Alpaca's paper API (IEX feed) and save them to data/bars/SPY_<date>.csv.
 - One function to fetch, one to save. Record the data source in the file.
 - Clear error if keys are missing or the API fails.
 - Out of scope: other tickers, live streaming, trading, AWS.
+- Put source code in src/. The data/ folder is ignored by git and is only for downloaded files.
+- Environment variables: ALPACA_API_KEY and ALPACA_SECRET_KEY.
