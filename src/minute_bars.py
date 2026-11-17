@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from dotenv import load_dotenv
 
 SYMBOL = "SPY"
 SOURCE = "alpaca-iex"
@@ -24,7 +25,12 @@ class MinuteBarsError(RuntimeError):
 
 
 def _read_keys() -> tuple[str, str]:
-    """Return (api_key, secret_key) from the environment, or raise naming the missing variable."""
+    """Return (api_key, secret_key) from the environment, or raise naming the missing variable.
+
+    Keys in a .env file in the current folder are loaded first. Variables already set in the
+    environment win over the .env file. Only ./.env is read (no search in parent folders).
+    """
+    load_dotenv(Path.cwd() / ".env", override=False)
     values = []
     for name in KEY_VARS:
         value = os.environ.get(name, "").strip()
@@ -77,12 +83,21 @@ def fetch_minute_bars(day: date, client=None) -> pd.DataFrame:
         raise MinuteBarsError(f"Alpaca returned no {SYMBOL} bars for {day.isoformat()}. Was it a trading day?")
 
     bars = raw.reset_index()[COLUMNS].copy()
+    # Alpaca's end time is inclusive, so a 16:00 bar can come back. It starts at the close, so drop it.
+    close = pd.Timestamp(datetime.combine(day, MARKET_CLOSE, tzinfo=NEW_YORK))
+    bars = bars[bars["timestamp"] < close].reset_index(drop=True)
+    if bars.empty:
+        raise MinuteBarsError(f"Alpaca returned no {SYMBOL} bars before 16:00 for {day.isoformat()}.")
     bars["source"] = SOURCE
     return bars
 
 
 def save_bars(bars: pd.DataFrame, day: date, out_dir: Path = Path("data/bars")) -> Path:
-    """Write bars to out_dir/SPY_<YYYY-MM-DD>.csv (creating out_dir if needed) and return the path."""
+    """Write bars to out_dir/SPY_<YYYY-MM-DD>.csv (creating out_dir if needed) and return the path.
+
+    Timestamps are saved in UTC, as Alpaca returns them (for example 14:30 UTC is the 09:30 New York
+    open in winter).
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{SYMBOL}_{day.isoformat()}.csv"

@@ -1,9 +1,8 @@
 """Tests for src/minute_bars.py. Fake data only: no real API calls, no real keys."""
 
+import os
 import socket
-import sys
 from datetime import date, datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -11,9 +10,7 @@ import pytest
 from alpaca.data.enums import DataFeed
 from alpaca.data.timeframe import TimeFrame
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-
-from minute_bars import MinuteBarsError, fetch_minute_bars, save_bars  # noqa: E402
+from minute_bars import MinuteBarsError, fetch_minute_bars, save_bars
 
 DAY = date(2026, 11, 13)
 NY = ZoneInfo("America/New_York")
@@ -44,9 +41,9 @@ class FakeClient:
         return FakeBarSet(self.df)
 
 
-def fake_bars_df(rows=3):
-    """A DataFrame shaped like alpaca-py's BarSet.df: (symbol, timestamp) index."""
-    stamps = pd.date_range("2026-11-13 14:30", periods=rows, freq="min", tz="UTC")
+def fake_bars_df(rows=3, start="2026-11-13 14:30"):
+    """A DataFrame shaped like alpaca-py's BarSet.df: (symbol, timestamp) index, UTC times."""
+    stamps = pd.date_range(start, periods=rows, freq="min", tz="UTC")
     index = pd.MultiIndex.from_arrays([["SPY"] * rows, stamps], names=["symbol", "timestamp"])
     return pd.DataFrame(
         {
@@ -74,6 +71,21 @@ def block_network(monkeypatch):
 
     monkeypatch.setattr(socket.socket, "connect", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
+
+
+@pytest.fixture(autouse=True)
+def isolate_keys(monkeypatch, tmp_path):
+    """Run each test in an empty temp folder with the key variables cleared.
+
+    The code loads ./.env, so this keeps the project's real .env (and any real keys in the
+    shell) out of every test. Keys a test loads from a fake .env are removed afterwards.
+    """
+    for name in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    yield
+    for name in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"):
+        os.environ.pop(name, None)
 
 
 @pytest.fixture
@@ -151,6 +163,24 @@ def test_no_bars_raises_error_with_date(fake_keys):
     empty = fake_bars_df(rows=0)
     with pytest.raises(MinuteBarsError, match="2026-11-13"):
         fetch_minute_bars(DAY, client=FakeClient(empty))
+
+
+def test_drops_bar_at_1600_new_york(fake_keys):
+    # 20:59 UTC = 15:59 New York and 21:00 UTC = 16:00 New York (EST in November).
+    client = FakeClient(fake_bars_df(rows=2, start="2026-11-13 20:59"))
+    bars = fetch_minute_bars(DAY, client=client)
+    ny_times = bars["timestamp"].dt.tz_convert(NY).dt.strftime("%H:%M").tolist()
+    assert ny_times == ["15:59"]
+
+
+def test_keys_are_read_from_dotenv_file(tmp_path):
+    # isolate_keys has already cleared the variables and moved into tmp_path.
+    assert "ALPACA_API_KEY" not in os.environ
+    (tmp_path / ".env").write_text(f"ALPACA_API_KEY={FAKE_KEY}\nALPACA_SECRET_KEY={FAKE_SECRET}\n")
+    bars = fetch_minute_bars(DAY, client=FakeClient(fake_bars_df()))
+    assert len(bars) == 3
+    assert os.environ["ALPACA_API_KEY"] == FAKE_KEY
+    assert os.environ["ALPACA_SECRET_KEY"] == FAKE_SECRET
 
 
 def test_save_bars_creates_folder_and_file(fake_keys, tmp_path):
